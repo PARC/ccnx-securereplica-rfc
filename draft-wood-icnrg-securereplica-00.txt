@@ -1,0 +1,336 @@
+
+
+
+
+icnrg                                                           M. Mosko
+Internet-Draft                                                   C. Wood
+Intended status: Standards Track                                    PARC
+Expires: October 5, 2016                                  April 03, 2016
+
+
+                     Secure Replica Service in CCN
+                   draft-wood-icnrg-securereplica-00
+
+Abstract
+
+   We describe a mechanism for session migration between an
+   authentication endpoint and content replica in CCN.  The technique
+   described herein depends on the CCNx-KE protocol.
+
+Status of This Memo
+
+   This Internet-Draft is submitted in full conformance with the
+   provisions of BCP 78 and BCP 79.
+
+   Internet-Drafts are working documents of the Internet Engineering
+   Task Force (IETF).  Note that other groups may also distribute
+   working documents as Internet-Drafts.  The list of current Internet-
+   Drafts is at http://datatracker.ietf.org/drafts/current/.
+
+   Internet-Drafts are draft documents valid for a maximum of six months
+   and may be updated, replaced, or obsoleted by other documents at any
+   time.  It is inappropriate to use Internet-Drafts as reference
+   material or to cite them other than as "work in progress."
+
+   This Internet-Draft will expire on October 5, 2016.
+
+Copyright Notice
+
+   Copyright (c) 2016 IETF Trust and the persons identified as the
+   document authors.  All rights reserved.
+
+   This document is subject to BCP 78 and the IETF Trust's Legal
+   Provisions Relating to IETF Documents
+   (http://trustee.ietf.org/license-info) in effect on the date of
+   publication of this document.  Please review these documents
+   carefully, as they describe your rights and restrictions with respect
+   to this document.  Code Components extracted from this document must
+   include Simplified BSD License text as described in Section 4.e of
+   the Trust Legal Provisions and are provided without warranty as
+   described in the Simplified BSD License.
+
+
+
+
+
+Mosko & Wood             Expires October 5, 2016                [Page 1]
+
+Internet-Draft        Secure Replica Service in CCN           April 2016
+
+
+Table of Contents
+
+   1.  Introduction  . . . . . . . . . . . . . . . . . . . . . . . .   2
+   2.  Assumptions and Overview  . . . . . . . . . . . . . . . . . .   3
+   3.  Session Migration . . . . . . . . . . . . . . . . . . . . . .   4
+     3.1.  MoveChallenge and MoveProof . . . . . . . . . . . . . . .   4
+     3.2.  MoveToken . . . . . . . . . . . . . . . . . . . . . . . .   4
+     3.3.  Verification  . . . . . . . . . . . . . . . . . . . . . .   4
+     3.4.  Final Notes . . . . . . . . . . . . . . . . . . . . . . .   5
+     3.5.  Replica Workload  . . . . . . . . . . . . . . . . . . . .   5
+   4.  Security Considerations . . . . . . . . . . . . . . . . . . .   5
+   5.  References  . . . . . . . . . . . . . . . . . . . . . . . . .   5
+     5.1.  Normative References  . . . . . . . . . . . . . . . . . .   5
+     5.2.  Informative References  . . . . . . . . . . . . . . . . .   6
+   Authors' Addresses  . . . . . . . . . . . . . . . . . . . . . . .   6
+
+1.  Introduction
+
+   CCNx-KE is a protocol that enables a consumer and producer to create
+   a session over which they can communicate securely.  Session keys
+   derived from CCNx-KE are used to encrypt interest and content objects
+   sent between the consumer and producer, as shown below.
+
+   +----------+                           +----------+
+   | Consumer <----(encrypted channel)----> Producer |
+   +----------+                           +----------+
+
+   In many cases, the producer must authenticate the consumer before
+   providing any application data.  Moreover, this producer might not be
+   the one storing the data sought after by the consumer.  Therefore, a
+   mechanism to create a secure session between the consumer and replica
+   is needed to securely obtain data.  One way to do this is for the
+   consumer to create a session with the replica.  However, if consumer
+   authentication is performed, then the replica is burdened with (a)
+   authenticating the consumer and (b) must possess the private keys
+   necessary to prove its identity to the consumer.  A better solution
+   would be to migrate a session from a producer (authenticator) to a
+   replica (data distributor) securely.
+
+   CCNx-KE [CCNXKE] supports the ability to migrate sessions with a
+   MoveToken.  However, the specification does not describe how to
+   create these tokens.  In this document, we describe how to migrate a
+   CCNx-KE session with a particular MoveToken construction.
+
+
+
+
+
+
+
+
+Mosko & Wood             Expires October 5, 2016                [Page 2]
+
+Internet-Draft        Secure Replica Service in CCN           April 2016
+
+
+2.  Assumptions and Overview
+
+   If a consumer is to migrate a session from a producer to a replica,
+   then the producer must necessarily trust the replica service to
+   provide the appropriate content.  This trust is based on economics
+   since the producer is likely to pay the replica for its services.
+   Under this assumption, we also assume that the producer and replica
+   service can create a secure session amongst themselves.  The producer
+   and replica are assumed to be able to create and share keys on
+   regular basis.  We rely on this assumption in the remainder of the
+   document.
+
+   When a client wishes to obtain data from a replica, the following
+   steps occur:
+
+   1.  The consumer creates a session with the (authenticating)
+       producer.
+
+   2.  The producer redirects the consumer to the best replica (e.g.,
+       based on its geographic location).
+
+   3.  The producer provides the consumer with a MoveToken to use when
+       migrating to the replica.
+
+   This is particular exchange in the context of CCNx-KE is outlined
+   below.  We will describe how MoveChallenge, MovePrefix, MoveProof,
+   and MoveToken are created in the following sections.
+
+    Client                 Producer              Replica (MovePrefix)
+
+     (Round 2 Interest)
+     + MoveChallenge
+     +------------------------->
+
+      (Round 2 Content)
+     + MovePrefix, MoveToken
+     <--------------------------
+
+     (Round 3 Interest)
+     + MoveToken, MoveProof
+     +---------------------------------------------------->
+
+     (Round 3 Content)
+     + NewSessionID
+     <----------------------------------------------------+
+
+
+
+
+
+
+Mosko & Wood             Expires October 5, 2016                [Page 3]
+
+Internet-Draft        Secure Replica Service in CCN           April 2016
+
+
+3.  Session Migration
+
+   Session keys produced by CCNx-KE are derived from the traffic secret
+   constructed by the consumer and producer.  Therefore, to decrypt
+   traffic from the consumer and join the session, the MoveToken must
+   allow the replica to extract or recover this secret.  Moreover, since
+   this extraction step must involve some computation, the replica must
+   be allowed to check that the MoveToken was generated by a trusted
+   producer.  This is necessary to avoid trivial computational Denial of
+   Service (DoS) attacks against the replica.
+
+   With the requirements in place, we now describe how to generate the
+   MoveChallenge, MoveProof, and MoveToken.
+
+3.1.  MoveChallenge and MoveProof
+
+   The MoveChallenge is as defined in [CCNXKE].  It is a random 256-bit
+   string defined as follows:
+
+      MoveChallenge = SHA256(X)
+
+   for a randomly generated 256-bit string X.  The value X is also the
+   MoveProof.
+
+3.2.  MoveToken
+
+   The MoveToken must allow the replica to (a) check that the consumer
+   obtained the MoveToken from a trusted or known producer and (b)
+   extract the traffic secret (TS) to derive the encryption and
+   decryption keys.  Therefore, it is defined as follows
+
+      MoveTokenCT, MoveTokenTag = AEnc(K, MoveChallenge + TS)
+      MoveToken = K_id +  MoveTokenCT +  MoveTokenTag
+
+   where K_id is the key identifier for the key K and + is
+   concatenation.  Also, AEnc is shorthand for authenticated encryption
+   that produces a ciphertext and authentication tag.  One such
+   algorithm is AES-GCM [GCM].
+
+3.3.  Verification
+
+   As shown in the protocol diagram above, the consumer must provide
+   both the MoveProof and MoveToken in the Round 3 Interest (for the
+   desired data).  Upon receipt, the replica performs the following
+   checks:
+
+   1.  If K_id is not valid, i.e., the replica has no key with that
+       identifier, then the Interest is dropped.
+
+
+
+Mosko & Wood             Expires October 5, 2016                [Page 4]
+
+Internet-Draft        Secure Replica Service in CCN           April 2016
+
+
+   2.  Otherwise, the replica computes
+
+       MoveTokenCT, MoveTokenTag = MoveToken
+       MoveChallenge + TS = ADec(K, MoveTokenCT, MoveTokenTag)
+
+   If the decryption fails, i.e., if the encryption is not valid (the
+   ciphertext was tampered with), then the Interest is dropped.  3.
+   Otherwise, the replica computes
+
+       Challenge = SHA256(MoveProof)
+
+   If Challenge = MoveChallenge, then the replica accepts the Interest.
+   Otherwise, the Interest is dropped.
+
+3.4.  Final Notes
+
+   If the traffic secret is recovered correctly, then the replica
+   creates a new SessionID (NewSessionID) for the session between the
+   replica and consumer and returns it with the corresponding
+   application data requested in the Round 3 Interest.  At this point,
+   both the consumer and replica have a common SessionID and traffic
+   secret and can then derive the appropriate encryption keys to use
+   when encrypting traffic.
+
+3.5.  Replica Workload
+
+   To create a new session, the replica must only perform a single
+   authenticated decryption and hash function (SHA256) computation.  No
+   public-key cryptographic algorithms are required to verify a
+   MoveToken and complete the migration.
+
+4.  Security Considerations
+
+   TODO
+
+5.  References
+
+5.1.  Normative References
+
+   [CCNXKE]   Mosko, M., Uzun, E., and C. Wood, "CCNx Key Exchange",
+              n.d., <TODO>.
+
+   [CCNxMessages]
+              Mosko, M. and I. Solis, "CCNx Messages in TLV Format",
+              January 2016, <https://tools.ietf.org/html/draft-irtf-
+              icnrg-ccnxmessages-01>.
+
+
+
+
+
+Mosko & Wood             Expires October 5, 2016                [Page 5]
+
+Internet-Draft        Secure Replica Service in CCN           April 2016
+
+
+   [DTLS12]   Rescorla, E. and N. Modadugu, "Datagram Transport Layer
+              Security Version 1.2", January 2012,
+              <https://tools.ietf.org/html/rfc6347>.
+
+   [GCM]      Dworkin, M., "Recommendation for Block Cipher Modes of
+              Operation: Galois/Counter Mode (GCM) and GMAC",
+              NIST Special Publication 800-38D, November 2007.
+
+   [RFC2119]  Bradner, S., "Key words for use in RFCs to Indicate
+              Requirement Levels", BCP 14, RFC 2119,
+              DOI 10.17487/RFC2119, March 1997,
+              <http://www.rfc-editor.org/info/rfc2119>.
+
+   [TLS13]    Rescorla, E., "The Transport Layer Security (TLS) Protocol
+              Version 1.3", December 2015, <https://tools.ietf.org/html/
+              draft-ietf-tls-tls13-11>.
+
+   [TLVENCAP]
+              Mosko, M. and C. Wood, "CCNx Packet Encapsulation", n.d.,
+              <https://github.com/PARC/ccnx-tlvencap-rfc>.
+
+5.2.  Informative References
+
+   [HASHCHAIN]
+              L. Lamport, "Password Authentication with Insecure
+              Communication", ANSI Communications of the ACM 24.11, pp
+              770-772, November 1981.
+
+   [RFC5077]  Salowey, J., Zhou, H., Eronen, P., and H. Tschofenig,
+              "Transport Layer Security (TLS) Session Resumption without
+              Server-Side State", RFC 5077, DOI 10.17487/RFC5077,
+              January 2008, <http://www.rfc-editor.org/info/rfc5077>.
+
+Authors' Addresses
+
+   M. Mosko
+   PARC
+
+   EMail: marc.mosko@parc.com
+
+
+   Christopher A. Wood
+   PARC
+
+   EMail: christopher.wood@parc.com
+
+
+
+
+
+
+Mosko & Wood             Expires October 5, 2016                [Page 6]
